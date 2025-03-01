@@ -1,5 +1,5 @@
 defaultProject: sunny-airfoil-452214-v9
-defaultLocation: US
+defaultLocation: us-central1
 defaultDataset: dataform
 defaultAssertionDataset: dataform_assertions
 dataformCoreVersion: 3.0.0
