@@ -1,0 +1,128 @@
+/*******************************************************************************/
+/*  
+/*******************************************************************************/
+
+waitTime            = -300
+lcp                 = "${GLOBAL_LCP}"
+projectId           = "${GLOBAL_LCP}" == 'pr' ? 'pr-ssr-thd' : 'np-ssr-thd'
+configFileName      = 'DC_INV_DLY/config/config.ini'
+datasetMyDrillSTG   = 'SSR_DATA'
+bqtargetScript      = 'DC_INV_DLY/bin/dc_inv_dly_tgt_ld.json'
+bqadhocScript       = 'DC_INV_DLY/bin/dc_inv_dly_adhoc_ld.json'
+git_repo             = "${GLOBAL_LCP}" == 'pr' ? '/var/lib/jenkins/git/one-thd/MG_SIR' : 'https://github.com/one-thd/MG_SIR.git'
+git_branch           = "${GLOBAL_LCP}" == 'pr' ? 'master' : 'ALT_PROJECT_ID'
+
+channel = '#edw_cloud_finance'
+
+def notifyFailed() 
+{
+  slackSend (channel: channel, color: '#FF0000', message: "${lcp}  FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]' (${env.BUILD_URL})")
+}
+
+try 
+{
+
+        // If an alternative project id is given in runtime, the job runs using the specified alternative project id
+        if ("${ALT_PROJECTID}")
+        {
+        	ALT_PROJECTID      = "${ALT_PROJECTID}"
+        	echo "Alternative project id: $ALT_PROJECTID"
+        }
+        else
+        {
+        	ALT_PROJECTID      = "${projectId}"
+        }
+
+       // ALT_PROJECTID      = "${ALT_PROJECTID}"
+
+	node 
+	{
+
+		env.ALT_PROJECTID = ALT_PROJECTID
+
+		if ("${BEGIN_DT}" &&  "${END_DT}")
+		{
+
+			MIN_DT       = ''
+			MAX_DT       = ''
+			LOAD_TYPE    = ''
+			MIN_DT       = "${BEGIN_DT}"
+			MAX_DT	     = "${END_DT}"
+			LOAD_TYPE    = 'H'
+			addProp = 'MIN_DT:'+ MIN_DT+'|MAX_DT:'+MAX_DT
+			echo "MIN_DT : MAX_DT - ${addProp}"
+			echo "LCP - ${lcp.toUpperCase()}"
+			key_vals = ''
+
+			stage name: 'Get Day for BEGIN_DT & END_DT'
+
+		            key_vals = ''
+
+		             if (lcp.toUpperCase() == 'PR')
+			     {
+		                key_vals = sh(returnStdout: true, script: 'bq query   --format=csv --max_rows=250 "SELECT MIN(CAL_DT) AS DATEMIN,MAX(CAL_DT) AS DATEMAX from [pr-finance-thd:FINANCE_DATA.CAL_PRD_HIER] where CAL_DT BETWEEN CAST(${BEGIN_DT} AS DATE) AND  CAST(${END_DT} AS DATE) " | grep -v DATEMIN | sed "/^\$/d"')
+                             }
+			     else
+			     {
+                    		key_vals = sh(returnStdout: true, script: 'bq query  --format=csv --max_rows=250 "SELECT MIN(CAL_DT) AS DATEMIN,MAX(CAL_DT) AS DATEMAX from [np-finance-thd:FINANCE_DATA.CAL_PRD_HIER] where CAL_DT BETWEEN CAST(${BEGIN_DT} AS DATE) AND  CAST(${END_DT} AS DATE) " | grep -v DATEMIN | sed "/^\$/d"')
+                 	     }
+                	     echo "DATES - $key_vals"
+                	     key_ind_arr = key_vals.split(",")
+                	     // addProp = 'MIN_DT:'+key_ind_arr[0]+'|MAX_DT:'+key_ind_arr[1]+'|LOAD_TYPE:'+LOAD_TYPE
+			     addProp = 'MIN_DT:'+key_ind_arr[0]+'|MAX_DT:'+key_ind_arr[1]+'|LOAD_TYPE:'+LOAD_TYPE+'|ALT_PROJECTID:'+ALT_PROJECTID
+			     echo "addProp - ${addProp}"
+
+		}
+
+		else 
+		{
+
+
+			stage name: 'Get Day of Week'
+
+		            key_vals = ''
+		            LOAD_TYPE = 'I'
+
+		             if (lcp.toUpperCase() == 'PR')
+			     {
+		                    key_vals = sh(returnStdout: true, script: "bq query --use_legacy_sql=false  --format=csv --max_rows=250 'select MIN(CAL_DT) AS MIN_DT, MAX(CAL_DT) AS MAX_DT from `pr-finance-thd.FINANCE_MASTER_VIEWS.CAL_PRD_HIER_FD` where CAL_DT between (select DISTINCT PREV_FWK_BGN_DT FROM `pr-finance-thd.FINANCE_MASTER_VIEWS.CAL_PRD_HIER_FD` WHERE CAL_DT = DATE_SUB(CURRENT_DATE,INTERVAL 1 DAY)) and DATE_SUB(CURRENT_DATE,INTERVAL 1 DAY)' | grep -v MIN_DT | sed '/^\$/d'")
+                 	     }
+			     else
+			     {
+		                    key_vals = sh(returnStdout: true, script: "bq query --use_legacy_sql=false  --format=csv --max_rows=250 'select MIN(CAL_DT) AS MIN_DT, MAX(CAL_DT) AS MAX_DT from `np-finance-thd.FINANCE_MASTER_VIEWS.CAL_PRD_HIER_FD` where CAL_DT between (select DISTINCT PREV_FWK_BGN_DT FROM `np-finance-thd.FINANCE_MASTER_VIEWS.CAL_PRD_HIER_FD` WHERE CAL_DT = DATE_SUB(CURRENT_DATE,INTERVAL 1 DAY)) and DATE_SUB(CURRENT_DATE,INTERVAL 1 DAY)' | grep -v MIN_DT | sed '/^\$/d'")
+                 	     }
+	                     echo "DATES - $key_vals"
+
+	                     key_ind_arr = key_vals.split(",")
+	                     addProp = 'MIN_DT:'+key_ind_arr[0]+'|MAX_DT:'+key_ind_arr[1]+'|LOAD_TYPE:'+LOAD_TYPE+'|ALT_PROJECTID:'+ALT_PROJECTID
+            	             echo "addProp - ${addProp}"
+
+		}
+
+}
+
+waitTime = -60
+stage name: 'Stage to DC_INV_DLY Load'
+       retry(1) {
+    		    waitTime += 60
+    		    build job: 'big_query_runner', parameters: [
+    		            [$class: 'StringParameterValue', name: 'CONFIG_JSON', value: bqtargetScript],
+    		            [$class: 'StringParameterValue', name: 'CONFIG_PROP', value: configFileName],
+    		            [$class: 'StringParameterValue', name: 'SQL_PROP', value: configFileName],
+			    [$class: 'StringParameterValue', name: 'ADD_PROP', value: addProp],
+    			    [$class: 'StringParameterValue', name: 'LCP', value: lcp],
+                            [$class: 'StringParameterValue', name: 'GIT_REPO', value: git_repo],
+                            [$class: 'StringParameterValue', name: 'GIT_BRANCH', value: git_branch],
+		      	    [$class: 'StringParameterValue', name: 'alternate_project_id', value: ALT_PROJECTID]
+    	           ], quietPeriod: waitTime
+    		}
+
+}        
+
+catch (e) {
+   currentBuild.result = "FAILED"
+   if ( "${GLOBAL_LCP}" == 'pr' ){
+      notifyFailed(e)
+    }
+   throw e
+}
